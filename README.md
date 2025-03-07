@@ -15,39 +15,6 @@ It allows users to call a phone number, ask questions, and receive AI-generated 
 
 ---
 
-## IVR Call Flow - Sequence Diagram
-
-```mermaid
-sequenceDiagram
-    participant Caller
-    participant Twilio
-    participant Flask Server
-    participant Mistral AI
-
-    Caller->>+Twilio: Calls IVR phone number
-    Twilio->>+Flask Server: "A Call Comes In" → /call (Webhook)
-    Flask Server->>+Twilio: Plays welcome message & starts speech recognition
-    Twilio->>+Caller: "Welcome to the automated assistant. What can I help you with today?"
-
-    Caller->>+Twilio: Asks a question (Speech)
-    Twilio->>+Flask Server: Transcribes speech → /process_speech
-    Flask Server->>+Mistral AI: Sends transcribed text & conversation history
-    Mistral AI-->>Flask Server: Returns AI-generated response
-
-    Flask Server->>+Twilio: Redirects response → /speak_response
-    Twilio->>+Caller: Reads AI response (TTS)
-    
-    Caller->>+Twilio: Can ask another question (Loop)
-    Twilio->>+Flask Server: Transcribes new question → /process_speech
-    Flask Server->>+Mistral AI: Sends updated conversation history
-    Mistral AI-->>Flask Server: Returns new AI-generated response
-
-    Flask Server->>+Twilio: Redirects new response → /speak_response
-    Twilio->>+Caller: "May I help you with something else?"
-    
-    Caller->>+Twilio: Hangs up (Optional)
-    Twilio-->>Flask Server: Call Ends
-
 
 ## ** How It Works**
 ### **1️. Call Flow**
@@ -125,3 +92,37 @@ IVR Responds:
 "The hospital operates from Monday to Friday, 8:00 AM to 6:00 PM.
 We remain closed on Saturdays and Sundays.
 May I help you with anything else?"
+
+
+## IVR Call Flow - Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant Caller
+    participant Twilio
+    participant Flask Server
+    participant Mistral AI
+
+    Caller->>+Twilio: Calls IVR phone number
+    Twilio->>+Flask Server: "A Call Comes In" → /call (Webhook)
+    Flask Server->>+Twilio: Plays welcome message & starts speech recognition
+    Twilio->>+Caller: "Welcome to the automated assistant. What can I help you with today?"
+
+    Caller->>+Twilio: Asks a question (Speech)
+    Twilio->>+Flask Server: Transcribes speech → /process_speech
+    Flask Server->>+Mistral AI: Sends transcribed text & conversation history
+    Mistral AI-->>Flask Server: Returns AI-generated response
+
+    Flask Server->>+Twilio: Redirects response → /speak_response
+    Twilio->>+Caller: Reads AI response (TTS)
+    
+    Caller->>+Twilio: Asks a follow-up question
+    Twilio->>+Flask Server: Transcribes new question → /process_speech
+    Flask Server->>+Mistral AI: Sends updated conversation history
+    Mistral AI-->>Flask Server: Returns new AI-generated response
+
+    Flask Server->>+Twilio: Redirects new response → /speak_response
+    Twilio->>+Caller: "May I help you with something else?"
+    
+    Caller->>+Twilio: Hangs up (Optional)
+    Twilio-->>Flask Server: Call Ends
