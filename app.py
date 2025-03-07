@@ -1,115 +1,121 @@
 from flask import Flask, request, Response
-from twilio.twiml.voice_response import VoiceResponse
+from twilio.twiml.voice_response import VoiceResponse, Gather
 import requests
-import openai  
+import threading
 import os
-import time
-from twilio.rest import Client
+
+
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
+
+if not MISTRAL_API_KEY:
+    MISTRAL_API_KEY = input("Enter your Mistral API Key: ").strip()
+    os.environ["MISTRAL_API_KEY"] = MISTRAL_API_KEY  
+
+# Ensure API key is not empty
+if not MISTRAL_API_KEY:
+    print("Error: Mistral API Key is required to run this program.")
+    exit(1)
 
 app = Flask(__name__)
 
-# OPENAI approach:
-# Replace with OpenAI API key or use an open-source alternative
-# openai.api_key = "openai-api-key"
-
-# Mistril API approach:
-MISTRAL_API_KEY = "mistral-api-key"
-
-# Twilio Credentials
-TWILIO_ACCOUNT_SID = "twilio-account-sid"
-TWILIO_AUTH_TOKEN = "twilio-auth-token"
-
-client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+# Store conversation history per call
+conversation_history = {}
 
 
+@app.route("/call", methods=["POST"])
+def call():
 
-
-
-
-
-
-
-# ----> APPROACH ONE WHERE /IVR IS CALLED FIRST
-
-# Process incoming calls
-# @app.route("/ivr", methods=["POST"])
-# def ivr():
-#     response = VoiceResponse()
+    response = VoiceResponse()
     
-#     # Ask for user input via voice
-#     response.say("Welcome to the automated assistant. Please ask your question after the beep.", voice='Polly.Joanna')
+    response.say("Welcome to the automated assistant. What can I help you with today?", voice='Polly.Joanna')
 
-#     # Record the caller's response
-#     response.record(timeout=2, transcribe=True, transcribe_callback="/transcription", max_length=10, play_beep=True, finish_on_key="#",  wait_for_beep=True)
+    gather = Gather(
+        input="speech",
+        speech_timeout="auto",
+        speech_model="experimental_conversations",
+        enhanced=True,
+        action="/process_speech"
+    )
 
-#     return Response(str(response), mimetype="text/xml")
+    response.append(gather)
 
-# # Process transcription results
-# @app.route("/transcription", methods=["POST"])
-# def transcription():
-#     print("Transcription received")
-#     transcription_text = request.form.get("TranscriptionText", "")
-
-#     if transcription_text:
-#         print(f"User said: {transcription_text}")
-
-#         # Query LLM for response
-#         ai_response = query_llm(transcription_text)
-
-#         print("AI response: ", ai_response)
-
-#         # Return Twilio response
-#         response = VoiceResponse()
-#         response.say(ai_response, voice='Polly.Joanna')
-
-#         return Response(str(response), mimetype="text/xml")
-
-#     return "No transcription received", 400
+    return Response(str(response), mimetype="text/xml")
 
 
 
+# Process Speech Input, Call AI, and Redirect to `/speak_response`
+@app.route("/process_speech", methods=["POST"])
+def process_speech():
+    voice_input = request.form.get("SpeechResult", "").strip()
+    call_sid = request.form.get("CallSid", "")
+
+    response = VoiceResponse()
+
+    if not voice_input:
+        response.say("I couldn't understand that. Could you please repeat?", voice='Polly.Joanna')
+        response.redirect("/call") 
+        return Response(str(response), mimetype="text/xml")
+
+    print(f"🎤 User said: {voice_input}")
+
+    # Initialize conversation history if it's a new call
+    if call_sid not in conversation_history:
+        conversation_history[call_sid] = []
+
+    # Add user input to history
+    conversation_history[call_sid].append({"role": "user", "content": voice_input})
+
+    # Run LLM Query in a Separate Thread
+    def process_ai():
+        ai_response = query_llm(conversation_history[call_sid])  
+        print(f"AI Response: {ai_response}")
+
+        # Add AI response to history
+        conversation_history[call_sid].append({"role": "assistant", "content": ai_response})
+
+    thread = threading.Thread(target=process_ai)
+    thread.start()
+    thread.join()  # Ensure AI processing completes before moving forward
+
+    response.redirect("/speak_response")
+
+    return Response(str(response), mimetype="text/xml")
+
+
+# Speak AI Response & Ask User for More Questions
+@app.route("/speak_response", methods=["POST"])
+def speak_response():
+    call_sid = request.form.get("CallSid", "")
+
+    response = VoiceResponse()
+
+    ai_response = (
+        conversation_history[call_sid][-1]["content"]
+        if call_sid in conversation_history and conversation_history[call_sid]
+        else "I'm sorry, I couldn't process your request."
+    )
+
+    response.say(ai_response, voice='Polly.Joanna')
+
+    response.say("May I help you with something else? If not, you may hang up the phone.", voice='Polly.Joanna')
+
+    # Gather More Speech Input (Loop the conversation)
+    gather = Gather(
+        input="speech",
+        speech_timeout="auto",
+        speech_model="experimental_conversations",
+        enhanced=True,
+        action="/process_speech"  
+    )
+
+    response.append(gather)
+
+    return Response(str(response), mimetype="text/xml")
 
 
 
-
-
-
-
-# ----> APPROACH TWO WHERE /TRANSCRIPTION IS CALLED FIRST DIRECTLY
-@app.route("/transcription", methods=["POST"])
-def transcription():
-    recording_url = request.form.get("RecordingUrl", "")
-    recording_sid = request.form.get("RecordingSid", "")
-
-    print(f"Recording SID: {recording_sid}")
-    print(f"Recording URL: {recording_url}")
-
-    if not recording_sid:
-        return "No recording SID received", 400
-
-    # Poll for transcription (max wait: 10 sec)
-    for _ in range(10):
-        time.sleep(1)  # Wait 1 sec before checking
-        recording = client.recordings(recording_sid).fetch()
-        
-        if recording.transcription_text:  # If transcription is ready
-            transcription_text = recording.transcription_text
-            print(f"User said: {transcription_text}")
-
-            # Query OpenAI LLM
-            ai_response = query_llm(transcription_text)
-            print("AI response: ", ai_response)
-
-            # Respond using Twilio
-            response = VoiceResponse()
-            response.say(ai_response, voice='Polly.Joanna')
-
-            return Response(str(response), mimetype="text/xml")
-
-    return "Transcription not ready", 400
-
-# Function to interact with LLM
-def query_llm(prompt):
+# Function to Interact with LLM with History
+def query_llm(conversation_history):
     try:
         system_prompt = """You are an intelligent IVR assistant for a hospital. Your goal is to assist callers by providing accurate information about the hospital, including operational hours, address, and general guidance. 
 
@@ -144,23 +150,10 @@ def query_llm(prompt):
         Ensure that all responses are **formatted clearly**, so the caller can easily understand the details.
         """
 
-        # OPENAI approach:
-        # # New OpenAI API Call Syntax
-        # client = openai.OpenAI(api_key=openai.api_key)  # Create a client instance
+        # Format conversation history for LLM and give it the system prompt
+        formatted_history = [{"role": "system", "content": system_prompt}] + conversation_history
 
-        # response = client.chat.completions.create(
-        #     model="gpt-3.5-turbo",
-        #     messages=[
-        #         {"role": "system", "content": system_prompt},
-        #         {"role": "user", "content": prompt}
-        #     ]
-        # )
-
-        # return response.choices[0].message.content
-
-
-
-        # MISTRAL API approach:
+        # Mistral API approach 
         headers = {
             "Authorization": f"Bearer {MISTRAL_API_KEY}",
             "Content-Type": "application/json"
@@ -168,10 +161,7 @@ def query_llm(prompt):
 
         payload = {
             "model": "mistral-small",  
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ]
+            "messages": formatted_history
         }
 
         response = requests.post("https://api.mistral.ai/v1/chat/completions", json=payload, headers=headers)
@@ -182,7 +172,7 @@ def query_llm(prompt):
             return f"Error: {response.json()}"
 
     except Exception as e:
-        print("Error calling OpenAI API:", str(e))  # Debugging output
+        print("Error calling LLM API:", str(e))  # Debugging output
         return "I'm sorry, I couldn't process your request."
 
 # Run Flask
