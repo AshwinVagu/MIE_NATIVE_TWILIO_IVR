@@ -27,12 +27,12 @@ def call():
 
     response = VoiceResponse()
     
-    response.say("Welcome to the automated assistant. What can I help you with today?", voice='Polly.Joanna')
+    response.say("Welcome to the automated assistant. What can I help you with today?", voice='Polly.Stephen-Neural')
 
     gather = Gather(
         input="speech",
         speech_timeout="auto",
-        speech_model="experimental_conversations",
+        speech_model="deepgram_nova-2",
         enhanced=True,
         action="/process_speech"
     )
@@ -52,7 +52,7 @@ def process_speech():
     response = VoiceResponse()
 
     if not voice_input:
-        response.say("I couldn't understand that. Could you please repeat?", voice='Polly.Joanna')
+        response.say("I couldn't understand that. Could you please repeat?", voice='Polly.Stephen-Neural')
         response.redirect("/call") 
         return Response(str(response), mimetype="text/xml")
 
@@ -95,22 +95,23 @@ def speak_response():
         else "I'm sorry, I couldn't process your request."
     )
 
-    response.say(ai_response, voice='Polly.Joanna')
-
-    response.say("May I help you with something else? If not, you may hang up the phone.", voice='Polly.Joanna')
-
-    # Gather More Speech Input (Loop the conversation)
+    # Gather input while speaking, allowing barge-in
     gather = Gather(
         input="speech",
         speech_timeout="auto",
-        speech_model="experimental_conversations",
+        speech_model="deepgram_nova-2",
         enhanced=True,
-        action="/process_speech"  
+        action="/process_speech",
+        bargeIn=True  
     )
+
+    # Move the AI response inside Gather to allow interruption
+    gather.say(ai_response, voice='Polly.Stephen-Neural')
 
     response.append(gather)
 
     return Response(str(response), mimetype="text/xml")
+
 
 
 
@@ -127,6 +128,8 @@ def query_llm(conversation_history):
         3. If a caller asks about both the **timings and address**, provide both details in a well-structured response.
         4. Ensure responses are **concise, yet complete**, to avoid confusion for the caller.
         5. If the caller asks a question that you **do not have an answer for**, kindly inform them that they can reach the hospital directly for further inquiries.
+        6. Finally after giving a caller a complete answer(That does not include answers where you needed a detail and investigated from the user), ask the callers if they have any more questions.
+        If the caller has no more questions, end the conversation politely and ask the user to hang up the phone call.
 
         Example Responses:
 
