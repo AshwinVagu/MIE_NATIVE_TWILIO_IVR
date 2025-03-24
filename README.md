@@ -139,6 +139,9 @@ sequenceDiagram
 
 In this approach, the IVR system uses **Twilio's bidirectional streaming** capabilities to directly pipe raw audio to **Deepgram for Speech-to-Text**, and then streams **Deepgram TTS responses** back to the caller — enabling a low-latency, barge-in–capable conversational flow powered by **Mistral AI**.
 
+NOTE: I also have simple streaming of Twilio audio and speech-to-text conversion in another file(without LLM), in case
+a simplified version of this code is needed in another usecase. The file you can look into for this is the twilio_to_deepgram_streaming.js file in streaming_approach directory.
+
 ---
 
 ## **Features**
@@ -212,6 +215,10 @@ ngrok http 8080
 http://your-ngrok-url/
 
 - Twilio will initiate a <Stream> connection to your WebSocket server on call connect.
+
+## ** Youtube Demo
+
+Link - https://www.youtube.com/shorts/KqPmdxK2dvk
 
 
 ## Approach 2: IVR Call Flow - Sequence Diagram 
