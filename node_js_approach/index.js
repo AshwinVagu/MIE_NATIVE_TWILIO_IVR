@@ -29,6 +29,7 @@
     let chunks = {};
     let timeoutHandlers = {};  // Stores timers to detect inactivity
     let partialTranscript = {}; // Stores ongoing speech data
+    let speakingState = {};
     const ttsClient = new textToSpeech.TextToSpeechClient();
   
     function linearToMuLaw(sample) {
@@ -58,29 +59,55 @@
         }
         return output;
     }
+
+    function chunkBuffer(buffer, chunkSize) {
+        let chunks = [];
+        for (let i = 0; i < buffer.length; i += chunkSize) {
+            chunks.push(buffer.slice(i, i + chunkSize));
+        }
+        return chunks;
+    }
   
-    async function streamAIResponseToTwilio(ws, aiResponse, streamSid) {
+    async function streamAIResponseToTwilio(ws, aiResponse, streamSid, callSid) {
         try {
+            speakingState[callSid] = true;
+    
             const [response] = await ttsClient.synthesizeSpeech({
                 input: { text: aiResponse },
                 voice: { languageCode: 'en-US', ssmlGender: 'FEMALE' },
                 audioConfig: { audioEncoding: 'LINEAR16', sampleRateHertz: 8000 }
             });
-  
+    
             const pcmBuffer = Buffer.from(response.audioContent, 'binary');
             const muLawBuffer = pcmToMuLaw(pcmBuffer);
-            const payload = muLawBuffer.toString('base64');
-  
-            console.log("Streaming AI response to Twilio...");
-  
-            if (ws.readyState === WebSocket.OPEN) {
+            const audioChunks = chunkBuffer(muLawBuffer, 320); // 320 bytes = 20ms at 8kHz
+    
+            console.log("Streaming TTS audio in chunks...");
+    
+            for (let chunk of audioChunks) {
+                // Stop streaming if barge-in occurred
+                if (!speakingState[callSid] || ws.readyState !== WebSocket.OPEN) {
+                    console.log("TTS interrupted by user speech.");
+                    break;
+                }
+    
+                const payload = chunk.toString('base64');
                 ws.send(JSON.stringify({ event: "media", streamSid, media: { payload } }));
-                ws.send(JSON.stringify({ event: "mark", streamSid, mark: { name: "tts_response" } }));
-            } else {
-                console.warn("WebSocket is not open while trying to send AI response");
+    
+                // Wait ~20ms to simulate real-time playback
+                await new Promise(resolve => setTimeout(resolve, 20));
             }
+    
+            // Mark end of TTS (if not interrupted)
+            if (ws.readyState === WebSocket.OPEN && speakingState[callSid]) {
+                ws.send(JSON.stringify({ event: "mark", streamSid, mark: { name: "tts_response_end" } }));
+            }
+    
+            speakingState[callSid] = false;
+    
         } catch (err) {
             console.error("Error streaming AI response:", err);
+            speakingState[callSid] = false;
         }
     }
   
@@ -105,29 +132,36 @@
   
                     deepgram.onmessage = async (deepgramMsg) => {
                         const res = JSON.parse(deepgramMsg.data);
-  
+                    
                         if (res.type === "Results" && res.channel?.alternatives?.length > 0) {
                             const transcript = res.channel.alternatives[0].transcript.trim();
+                    
                             if (transcript) {
                                 console.log("User said:", transcript);
-  
+                    
+                                // ✅ Barge-in detection: only now do we interrupt
+                                if (speakingState[callSid]) {
+                                    console.log("Barge-in detected via valid transcript. Interrupting...");
+                                    speakingState[callSid] = false;
+                                }
+                    
                                 partialTranscript[callSid] += ` ${transcript}`.trim();
-  
+                    
                                 if (timeoutHandlers[callSid]) clearTimeout(timeoutHandlers[callSid]);
-  
+                    
                                 timeoutHandlers[callSid] = setTimeout(async () => {
                                     let finalSentence = partialTranscript[callSid].trim();
                                     if (finalSentence) {
                                         conversationHistory[callSid].push({ role: "user", content: finalSentence });
-  
+                    
                                         const aiResponse = await queryLLM(conversationHistory[callSid]);
                                         conversationHistory[callSid].push({ role: "assistant", content: aiResponse });
-  
+                    
                                         console.log("AI Response:", aiResponse);
-  
-                                        const streamSid = Object.keys(chunks)[0];
-                                        await streamAIResponseToTwilio(ws, aiResponse, streamSid);
-  
+                    
+                                        const streamSid = Object.keys(chunks)[0];  // or maintain streamSid<->callSid map
+                                        await streamAIResponseToTwilio(ws, aiResponse, streamSid, callSid);
+                    
                                         partialTranscript[callSid] = "";
                                     }
                                 }, 2000);
@@ -138,26 +172,39 @@
   
                 case "start":
                     console.log(`Starting media stream for ${msg.streamSid}`);
+                    await greetingMessage(ws, msg.streamSid);
                     break;
   
                 case "media":
-                    let twilioData = msg.media.payload;
-                    let wav = new WaveFile();
+                    const twilioData = msg.media.payload;
+                    const wav = new WaveFile();
                     wav.fromScratch(1, 8000, "8m", Buffer.from(twilioData, "base64"));
                     wav.fromMuLaw();
-  
-                    let audioBuffer = Buffer.from(wav.data.samples);
-                    if (!chunks[msg.streamSid]) {
-                        chunks[msg.streamSid] = [];
+                
+                    const audioBuffer = Buffer.from(wav.data.samples);
+                    const streamSid = msg.streamSid;
+                
+                    let inferredCallSid = Object.keys(conversationHistory).find(sid => chunks[streamSid]) || msg.callSid;
+                
+                    if (!chunks[streamSid]) {
+                        chunks[streamSid] = [];
                     }
-                    chunks[msg.streamSid].push(audioBuffer);
-  
-                    if (chunks[msg.streamSid].length >= 5) {
-                        let combinedBuffer = Buffer.concat(chunks[msg.streamSid]);
+                
+                    chunks[streamSid].push(audioBuffer);
+                
+                    if (chunks[streamSid].length >= 5) {
+                        const combinedBuffer = Buffer.concat(chunks[streamSid]);
                         deepgram.send(combinedBuffer, { binary: true });
-                        chunks[msg.streamSid] = [];
+                        chunks[streamSid] = [];
                     }
                     break;
+
+                case "mark":
+                    if (msg.mark.name === "tts_response_end") {
+                        speakingState[msg.callSid] = false;
+                        console.log("AI finished speaking.");
+                    }
+                    break;    
   
                 case "stop":
                     console.log(`Call ended`);
@@ -205,23 +252,49 @@
             </Response>`
         );
     });
+
+
+    async function greetingMessage(ws, streamSid) {
+        const greetingText = "Welcome to the automated assistant. What can I help you with today?";
+        await streamAIResponseToTwilio(ws, greetingText, streamSid);
+    } 
   
     async function queryLLM(conversation) {
         try {
             const systemPrompt = `
-            You are an intelligent IVR assistant for a hospital. Your goal is to assist callers by providing accurate information about hospital services, including operational hours, address, and general inquiries.
-  
-            **Guidelines:**
-            1. If asked about hospital hours, mention it's open **Monday to Friday from 8:00 AM to 6:00 PM** and closed on **Saturday & Sunday**.
-            2. If asked for the hospital's address, provide the full address in a structured format.
-            3. If asked about both, include both in your response.
-            4. Keep responses **clear, concise, and professional**.
-            5. If the caller asks something you don't know, politely suggest they contact the front desk.
-  
-            **Example Responses:**
-            - **For Hours:** "The hospital is open **Monday to Friday from 8 AM to 6 PM** and closed on **weekends**."
-            - **For Address:** "MediCare Hospital, 1234 Wellness Ave, Springfield, IL, 62704."
-            - **For Both:** "The hospital operates **Monday to Friday, 8 AM - 6 PM**, and is closed on weekends. Visit us at **MediCare Hospital, 1234 Wellness Ave, Springfield, IL, 62704**."
+            You are an intelligent IVR assistant for a hospital. Your goal is to assist callers by providing accurate information about the hospital, including operational hours, address, and general guidance. 
+
+            You should always respond in a **polite and professional tone**, ensuring clarity in communication. When a caller asks about hospital timings, provide them with the correct schedule, including open and closed hours. If they ask for the hospital's address, provide the full location in a structured manner.
+
+            **Key Instructions:**
+            1. If a caller asks about hospital hours, state the operating hours from **Monday to Friday** and inform them that the hospital is closed on **Saturday and Sunday**.
+            2. If a caller requests the hospital's address, provide the full address in a clear format.
+            3. If a caller asks about both the **timings and address**, provide both details in a well-structured response.
+            4. Ensure responses are **concise, yet complete**, to avoid confusion for the caller.
+            5. If the caller asks a question that you **do not have an answer for**, kindly inform them that they can reach the hospital directly for further inquiries.
+            6. Finally after giving a caller a complete answer(That does not include answers where you needed a detail and investigated from the user), ask the callers if they have any more questions.
+            If the caller has no more questions, end the conversation politely and ask the user to hang up the phone call.
+
+            Example Responses:
+
+            **For Hospital Timings Inquiry:**
+            "The hospital operates from **Monday to Friday**, between **8:00 AM and 6:00 PM**. Please note that we are closed on **Saturdays and Sundays**."
+
+            **For Hospital Address Inquiry:**
+            "Our hospital is located at:
+            **MediCare General Hospital**
+            1234 Wellness Avenue,
+            Springfield, IL, 62704, USA."
+
+            **For Both Timings and Address Inquiry:**
+            "Thank you for contacting MediCare General Hospital. Our operating hours are **Monday to Friday from 8:00 AM to 6:00 PM**. We remain **closed on Saturdays and Sundays**.  
+            You can visit us at:  
+            **MediCare General Hospital**  
+            1234 Wellness Avenue,  
+            Springfield, IL, 62704, USA.  
+            If you need any further assistance, feel free to contact our front desk."
+
+            Ensure that all responses are **formatted clearly**, so the caller can easily understand the details.
             `;
   
             let formattedHistory = [{ role: "system", content: systemPrompt }, ...conversation];
