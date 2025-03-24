@@ -9,7 +9,6 @@
     const WaveFile = require("wavefile").WaveFile;
     const axios = require("axios");
     const fs = require("fs");
-    const textToSpeech = require('@google-cloud/text-to-speech');
     require("dotenv").config();
   
     const app = express();
@@ -30,7 +29,6 @@
     let timeoutHandlers = {};  // Stores timers to detect inactivity
     let partialTranscript = {}; // Stores ongoing speech data
     let speakingState = {};
-    const ttsClient = new textToSpeech.TextToSpeechClient();
   
     function linearToMuLaw(sample) {
         const MU_LAW_MAX = 0x1FFF;
@@ -67,18 +65,33 @@
         }
         return chunks;
     }
+
+    async function synthesizeWithDeepgram(text) {
+        try {
+            const response = await axios.post(
+                "https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate=8000",
+                { text },
+                {
+                    headers: {
+                        Authorization: `Token ${DEEPGRAM_API_KEY}`,
+                        "Content-Type": "application/json"
+                    },
+                    responseType: "arraybuffer"
+                }
+            );
+            return Buffer.from(response.data);
+        } catch (error) {
+            console.error("Deepgram TTS failed:", error.response?.data || error.message);
+            throw error;
+        }
+    }
+    
   
     async function streamAIResponseToTwilio(ws, aiResponse, streamSid, callSid) {
         try {
             speakingState[callSid] = true;
     
-            const [response] = await ttsClient.synthesizeSpeech({
-                input: { text: aiResponse },
-                voice: { languageCode: 'en-US', ssmlGender: 'FEMALE' },
-                audioConfig: { audioEncoding: 'LINEAR16', sampleRateHertz: 8000 }
-            });
-    
-            const pcmBuffer = Buffer.from(response.audioContent, 'binary');
+            const pcmBuffer = await synthesizeWithDeepgram(aiResponse);
             const muLawBuffer = pcmToMuLaw(pcmBuffer);
             const audioChunks = chunkBuffer(muLawBuffer, 320); // 320 bytes = 20ms at 8kHz
     
@@ -139,7 +152,7 @@
                             if (transcript) {
                                 console.log("User said:", transcript);
                     
-                                // ✅ Barge-in detection: only now do we interrupt
+                                // Barge-in detection: only now do we interrupt
                                 if (speakingState[callSid]) {
                                     console.log("Barge-in detected via valid transcript. Interrupting...");
                                     speakingState[callSid] = false;
