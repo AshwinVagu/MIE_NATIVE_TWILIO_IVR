@@ -53,8 +53,9 @@ It allows users to call a phone number, ask questions, and receive AI-generated 
 
 ### **2️. Install Dependencies**
 Run the following command:
-
+```bash
 pip install -r requirements.txt
+```
 
 ### **3️. Set Up Twilio Phone Number**
 - Log in to Twilio Console.
@@ -66,17 +67,17 @@ pip install -r requirements.txt
 - Click Save.
 
 ### **4️. Start the Flask Server**
-
+```bash
 python app.py
-
+```
 It will ask for the Mistral API Key once, then store it in memory.
 
 
 ### **5️. Expose Server with ngrok**
 - In a separate terminal, run:
-
+```bash
 ngrok http http://127.0.0.1:5000
-
+```
 - This gives you a public URL like:
 
 https://random.ngrok-free.app
@@ -195,15 +196,15 @@ DEEPGRAM_API_KEY=your-deepgram-key-here
 
 ### **4. Start the WebSocket Server**
 Go to the required directory(streaming_approach) and start your server with:
-
+```bash
 node index.js
-
+```
 
 ### **5. Expose your server with ngrok**
 For exposing the server use:
-
+```bash
 ngrok http 8080
-
+```
 ### **6. Update your Twilio webhook**
 - Go to your Twilio Console → Phone Number Settings.
 - Under "A Call Comes In", set the webhook to:
