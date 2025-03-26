@@ -68,6 +68,10 @@ def process_speech():
     # Run LLM Query in a Separate Thread
     def process_ai():
         ai_response = query_llm(conversation_history[call_sid])  
+
+        # For this project to work with the local LLM/MIE_LLM_function_calling example you can uncomment the below line and comment the previous ai_response declaration
+        # ai_response = query_llm(voice_input, call_sid) 
+
         print(f"AI Response: {ai_response}")
 
         # Add AI response to history
@@ -177,7 +181,27 @@ def query_llm(conversation_history):
     except Exception as e:
         print("Error calling LLM API:", str(e))  # Debugging output
         return "I'm sorry, I couldn't process your request."
+    
+
+# For this project to work with the local LLM/MIE_LLM_function_calling example you can uncomment the below line and comment the previous query_llm declaration
+# def query_llm(user_input, call_sid):
+
+#     url = "http://127.0.0.1:5000/chat"
+#     payload = {
+#         "call_sid": call_sid,
+#         "user_input": user_input
+#     }
+
+#     response = requests.post(url, json=payload)
+
+#     if response.status_code == 200:
+#         result = response.json()
+#         return result['response']
+#     else:
+#         raise Exception(f"Request failed with status code {response.status_code}: {response.text}")
+
 
 # Run Flask
 if __name__ == "__main__":
+    # For this project to work with the local LLM/MIE_LLM_function_calling example maybe change the port
     app.run(port=5000, debug=True)
