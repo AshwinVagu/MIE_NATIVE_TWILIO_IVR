@@ -96,8 +96,8 @@ MISTRAL_API_KEY=your-key-here
 
 ## ** Youtube Demo
 
-Native Twilio TTS and STT - https://www.youtube.com/watch?v=rX2dQVOobQc 
-Native Twilio TTS(with deepgram nova 2 model) and STT - https://youtube.com/shorts/XHeusQa_7cE 
+- Native Twilio TTS and STT - https://www.youtube.com/watch?v=rX2dQVOobQc 
+- Native Twilio TTS(with deepgram nova 2 model) and STT - https://youtube.com/shorts/XHeusQa_7cE 
 
 ## Approach 1: IVR Call Flow - Sequence Diagram
 
