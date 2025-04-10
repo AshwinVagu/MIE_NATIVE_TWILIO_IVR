@@ -9,6 +9,7 @@ const wss = new WebSocket.Server({ server });
 
 let deepgram;
 let chunks = [];
+const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
 
 // Handle Web Socket Connection
 wss.on("connection", function connection(ws) {
@@ -84,7 +85,7 @@ wss.on("connection", function connection(ws) {
 app.post("/", async (req, res) => {
     deepgram = new WebSocket(
         "wss://api.deepgram.com/v1/listen?encoding=linear16&sample_rate=8000&channels=1&interim_results=true", //Added query parameters
-        { headers: { Authorization: "Token 824d0e4aca6d0f83dd3779671ff594dd9dcc30e7" } }
+        { headers: { Authorization: `Token ${DEEPGRAM_API_KEY}` } }
     );
 
     deepgram.onopen = () => {
