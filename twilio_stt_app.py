@@ -3,6 +3,8 @@ from twilio.twiml.voice_response import VoiceResponse, Gather
 import requests
 import threading
 import os
+import logging
+from logging.handlers import RotatingFileHandler
 
 
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
@@ -17,6 +19,35 @@ if not MISTRAL_API_KEY:
     exit(1)
 
 app = Flask(__name__)
+
+# --- Set up Logging (Moved OUTSIDE __main__) ---
+if not os.path.exists('logs'):
+    os.makedirs('logs')
+
+log_formatter = logging.Formatter(
+    "[%(levelname)s] %(asctime)s - %(name)s - %(message)s",
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+file_handler = RotatingFileHandler(
+    'logs/conversation.log', maxBytes=10*1024*1024, backupCount=5, delay=False
+)
+
+# file_handler.flush = lambda: None 
+file_handler.setFormatter(log_formatter)
+file_handler.setLevel(logging.DEBUG)
+
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+console_handler.setLevel(logging.DEBUG)
+
+app.logger.addHandler(file_handler)
+app.logger.addHandler(console_handler)
+
+app.logger.setLevel(logging.DEBUG)
+
+
+
 
 # Store conversation history per call
 conversation_history = {}
@@ -39,6 +70,9 @@ def call():
 
     response.append(gather)
 
+    # When the call ends, Twilio will POST to this URL
+    response.hangup()
+
     return Response(str(response), mimetype="text/xml")
 
 
@@ -57,6 +91,10 @@ def process_speech():
         return Response(str(response), mimetype="text/xml")
 
     print(f"🎤 User said: {voice_input}")
+    app.logger.info(f"🎤 User said: {voice_input}")
+    for handler in app.logger.handlers:
+        if hasattr(handler, 'flush'):
+            handler.flush()
 
     # Initialize conversation history if it's a new call
     if call_sid not in conversation_history:
@@ -73,6 +111,10 @@ def process_speech():
         # ai_response = query_llm(voice_input, call_sid) 
 
         print(f"AI Response: {ai_response}")
+        app.logger.info(f"AI Response: {ai_response}")
+        for handler in app.logger.handlers:
+            if hasattr(handler, 'flush'):
+                handler.flush()
 
         # Add AI response to history
         conversation_history[call_sid].append({"role": "assistant", "content": ai_response})
@@ -115,6 +157,23 @@ def speak_response():
     response.append(gather)
 
     return Response(str(response), mimetype="text/xml")
+
+
+@app.route("/call_status", methods=["POST"])
+def call_status():
+    call_sid = request.form.get("CallSid", "")
+    call_status = request.form.get("CallStatus", "")
+
+    if call_status == "completed":
+        if call_sid in conversation_history:
+            del conversation_history[call_sid]
+
+        with open("logs/conversation.log", "w") as f:
+            f.write("")  # truncate the file
+
+        app.logger.info(f"Call {call_sid} ended — conversation log cleared.")
+
+    return ("", 204)
 
 
 
@@ -180,6 +239,10 @@ def query_llm(conversation_history):
 
     except Exception as e:
         print("Error calling LLM API:", str(e))  # Debugging output
+        app.logger.error("Error calling LLM API:", str(e)) 
+        for handler in app.logger.handlers:
+            if hasattr(handler, 'flush'):
+                handler.flush()
         return "I'm sorry, I couldn't process your request."
     
 
