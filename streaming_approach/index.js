@@ -93,7 +93,7 @@
     
             const pcmBuffer = await synthesizeWithDeepgram(aiResponse);
             const muLawBuffer = pcmToMuLaw(pcmBuffer);
-            const audioChunks = chunkBuffer(muLawBuffer, 320); // 320 bytes = 20ms at 8kHz
+            const audioChunks = chunkBuffer(muLawBuffer, 160); // 160 bytes = 20ms at 8kHz
     
             console.log("Streaming TTS audio in chunks...");
     
