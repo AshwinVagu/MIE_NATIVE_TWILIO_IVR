@@ -99,12 +99,12 @@ router.post('/call_status', (req, res) => {
   const callSid = req.body.CallSid;
   const callStatus = req.body.CallStatus;
 
-//   if (callStatus === 'completed') {
-//     delete conversationHistory[callSid];
-//     const fs = require('fs');
-//     fs.writeFileSync('logs/conversation.log', '');  // truncate log
-//     logger.info(`Call ${callSid} ended — conversation log cleared.`);
-//   }
+  if (callStatus === 'completed') {
+    delete conversationHistory[callSid];
+    const fs = require('fs');
+    fs.writeFileSync('logs/conversation.log', '');  // truncate log
+    logger.info(`Call ${callSid} ended — conversation log cleared.`);
+  }
 
   res.sendStatus(204);
 });
