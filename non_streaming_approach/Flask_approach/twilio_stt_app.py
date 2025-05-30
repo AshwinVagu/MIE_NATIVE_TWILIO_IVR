@@ -111,7 +111,7 @@ def process_speech():
         # ai_response = query_llm(voice_input, call_sid) 
 
         print(f"AI Response: {ai_response}")
-        app.logger.info(f"AI Response: {ai_response}")
+        app.logger.info(f"🤖 AI Response: {ai_response}")
         for handler in app.logger.handlers:
             if hasattr(handler, 'flush'):
                 handler.flush()
