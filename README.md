@@ -260,3 +260,121 @@ IVR Responds:
 "The hospital operates from Monday to Friday, 8:00 AM to 6:00 PM.
 We remain closed on Saturdays and Sundays.
 May I help you with anything else?"
+
+
+
+
+# 📡 APPROACH 3: Conversational IVR with Twilio + Eleven Labs + Node.js
+
+This project implements a real-time voice IVR system where:
+
+- Twilio acts as the telecom provider
+- Eleven Labs handles Speech-to-Text, Conversational AI, turn-taking, and Text-to-Speech
+- Node.js handles function/tool calls, enabling your AI agent to take real-world actions like querying databases or external APIs
+- Built for natural, low-latency conversations, with Eleven Labs managing the full audio+AI stack and Node.js serving dynamic function responses.
+
+---
+
+## **Features**
+✅ **Eleven Labs Real-time STT + TTS** – Directly integrated with Twilio to capture and respond in natural voice
+✅ **Conversational AI with LLM** – Eleven Labs' inbuilt or custom LLM (e.g., Gemini) powers human-like dialogues
+✅ **Turn-Taking and Interruptions** – Smooth back-and-forth with barge-in support
+
+✅ **Tool Invocation via Webhook** – Node.js handles function calls based on AI decisions  
+✅ **API-ready Tool Layer** – Easily connect to CRM, database, or third-party APIs  
+✅ **Webhook-Driven Integration** – Uses Eleven Labs webhook calls for dynamic real-world interactions
+
+---
+
+## **Project Structure**
+📁 eleven_labs_approach/
+├── tools.js          # Express server to handle Eleven Labs tool webhooks
+└── package.json             # Node dependencies
+
+---
+
+## **Setup Instructions**
+### **1️. Prerequisites**
+- Node.js 18+
+- A Twilio number (with programmable voice + streaming enabled)
+- Eleven Labs account with Conersational AI
+- Ngrok (or similar tunneling service to expose localhost)
+  
+### **2️. Setup Eleven Labs Agent
+- Login to Eleven Labs → Go to Conversational AI
+- Create a new Voice Agent:
+1. Choose voice
+2. Assign a behavior prompt (system instructions)
+3. Choose model (eleven_turbo_v2_5 recommended)
+- (Optional) Add Knowledge Base
+- Enable LLM Tool Calling if supported
+- Under Integrations, link your Twilio account:
+1. Provide Account SID + Auth Token
+2. Choose the Twilio number to attach (In the phone numbers tab)
+3. Eleven Labs configures call webhooks automatically
+
+### **3. Configure Environment Variables**
+Create a .env file in your root directory:
+MISTRAL_API_KEY=your-mistral-key-here
+DEEPGRAM_API_KEY=your-deepgram-key-here
+
+### **4. Set up the tools.js server
+Go to the required directory(streaming_approach) and start your server with:
+```bash
+npm install
+```
+
+Then start the server: and start ngrok as well:
+```bash
+node tools.js
+```
+
+and start ngrok as well:
+```bash
+ngrok http 4000
+```
+
+### **5. Link Tool to Eleven Labs Agent
+- In Eleven Labs → Open your Agent
+- Go to Tools / Functions
+- Add a new tool:
+1. Name: check_order_status
+2. Description: "Checks customer's order status given an order ID."
+3. Params: { order_id: string }
+4. Webhook: https://<your-ngrok>.ngrok.io/elevenlabs/tool/check_order_status
+5. Save and activate agent
+
+
+## ** Youtube Demo
+
+Link - https://www.youtube.com/shorts/iCGMCEkiLJA 
+
+
+## Approach 2: IVR Call Flow - Sequence Diagram 
+```mermaid
+sequenceDiagram
+    participant Caller
+    participant Twilio
+    participant ElevenLabs
+    participant Node.js Server
+
+    Caller->>Twilio: Places call to IVR number
+    Twilio->>ElevenLabs: Forwards audio stream
+    ElevenLabs->>ElevenLabs: Real-time STT
+    ElevenLabs->>ElevenLabs: LLM conversation engine processes
+    ElevenLabs->>ElevenLabs: TTS synthesis
+    ElevenLabs->>Twilio: Sends speech response
+    Twilio->>Caller: Plays voice reply
+
+    Note over ElevenLabs: If tool call required:
+    ElevenLabs->>Node.js Server: Webhook with tool + params
+    Node.js Server->>Node.js Server: Executes function (e.g., DB/API)
+    Node.js Server->>ElevenLabs: Responds with result
+    ElevenLabs->>Caller: Continues dialogue with updated response
+```    
+
+
+# ** Example API Response**
+
+User: "Can you check order 12345?"
+AI Agent: "Sure. Order 12345 is shipped and should be delivered by June 15, 2025. Anything else I can help with?"
