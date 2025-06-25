@@ -60,7 +60,7 @@ class AudioLoop extends EventEmitter {
     async initialize() {
         try {
             // Initialize Google AI client
-            const apiKey = "AIzaSyCogUfynhSNenyl_vrLttO81TdcA_-patA";
+            const apiKey = "API_Key";
             if (!apiKey) {
                 throw new Error('GOOGLE_API_KEY environment variable is required');
             }
