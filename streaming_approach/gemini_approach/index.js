@@ -11,8 +11,9 @@
    // Required Node.js modules for WebSocket server, HTTP server, audio processing, and environment variables.
    const WebSocket = require("ws");
    const express = require("express");
-   const WaveFile = require("wavefile").WaveFile;
    const axios = require("axios");
+   const fs = require('fs');
+   const path = require('path');
    require("dotenv").config(); // Loads environment variables from a .env file
 
 
@@ -56,7 +57,50 @@
    let audioQualityMetrics = {};
 
 
-   // --- Audio Utility Functions ---
+   // --- IMPROVED Audio Utility Functions ---
+
+   /**
+    * FIXED: Proper Mu-Law to Linear16 PCM conversion
+    * The original conversion was incorrect - this provides proper decompanding
+    */
+   function muLawToLinear(muLawByte) {
+       const BIAS = 0x84;
+       const CLIP = 32635;
+       
+       // Invert all bits (Mu-Law is stored inverted)
+       muLawByte = ~muLawByte & 0xFF;
+       
+       // Extract sign, exponent, and mantissa
+       const sign = (muLawByte & 0x80) ? -1 : 1;
+       const exponent = (muLawByte & 0x70) >> 4;
+       const mantissa = muLawByte & 0x0F;
+       
+       // Calculate the linear value
+       let linear;
+       if (exponent === 0) {
+           linear = (mantissa << 4) + BIAS;
+       } else {
+           linear = ((mantissa | 0x10) << (exponent + 3)) + BIAS;
+       }
+       
+       // Apply sign and clip
+       linear = sign * (linear - BIAS);
+       return Math.max(-CLIP, Math.min(CLIP, linear));
+   }
+
+   /**
+    * FIXED: Convert Mu-Law buffer to Linear16 PCM buffer
+    */
+   function muLawToLinear16(muLawBuffer) {
+       const linear16Buffer = Buffer.alloc(muLawBuffer.length * 2);
+       
+       for (let i = 0; i < muLawBuffer.length; i++) {
+           const linearSample = muLawToLinear(muLawBuffer[i]);
+           linear16Buffer.writeInt16LE(linearSample, i * 2);
+       }
+       
+       return linear16Buffer;
+   }
 
 
    /**
@@ -162,100 +206,103 @@
 
 
    /**
-    * Converts raw PCM audio buffer to proper WAV format with headers
+    * FIXED: Proper WAV file creation with correct headers
     * @param {Buffer} pcmBuffer - Raw PCM audio data
     * @param {number} sampleRate - Sample rate (default 8000 for Twilio)
     * @param {number} channels - Number of channels (default 1 for mono)
     * @param {number} bitsPerSample - Bits per sample (default 16)
     * @returns {Buffer} - WAV formatted audio buffer
     */
-   function pcmToWav(pcmBuffer, sampleRate = 8000, channels = 1, bitsPerSample = 16) {
-       const blockAlign = channels * bitsPerSample / 8;
+   function createProperWavFile(pcmBuffer, sampleRate = 8000, channels = 1, bitsPerSample = 16) {
+       if (!pcmBuffer || pcmBuffer.length === 0) {
+           console.warn("Empty PCM buffer provided to WAV conversion");
+           return Buffer.alloc(44); // Return minimal WAV header
+       }
+       
+       const blockAlign = channels * (bitsPerSample / 8);
        const byteRate = sampleRate * blockAlign;
        const dataSize = pcmBuffer.length;
        const fileSize = 36 + dataSize;
-
-
+       
        const header = Buffer.alloc(44);
        let offset = 0;
-
-
+       
        // RIFF header
-       header.write('RIFF', offset); offset += 4;
+       header.write('RIFF', offset, 4, 'ascii'); offset += 4;
        header.writeUInt32LE(fileSize, offset); offset += 4;
-       header.write('WAVE', offset); offset += 4;
-
-
+       header.write('WAVE', offset, 4, 'ascii'); offset += 4;
+       
        // fmt chunk
-       header.write('fmt ', offset); offset += 4;
-       header.writeUInt32LE(16, offset); offset += 4; // chunk size
-       header.writeUInt16LE(1, offset); offset += 2; // PCM format
+       header.write('fmt ', offset, 4, 'ascii'); offset += 4;
+       header.writeUInt32LE(16, offset); offset += 4; // PCM format chunk size
+       header.writeUInt16LE(1, offset); offset += 2;  // PCM format
        header.writeUInt16LE(channels, offset); offset += 2;
        header.writeUInt32LE(sampleRate, offset); offset += 4;
        header.writeUInt32LE(byteRate, offset); offset += 4;
        header.writeUInt16LE(blockAlign, offset); offset += 2;
        header.writeUInt16LE(bitsPerSample, offset); offset += 2;
-
-
+       
        // data chunk
-       header.write('data', offset); offset += 4;
+       header.write('data', offset, 4, 'ascii'); offset += 4;
        header.writeUInt32LE(dataSize, offset);
-
-
+       
        return Buffer.concat([header, pcmBuffer]);
    }
 
 
    /**
-    * IMPROVED: Better silence detection with adaptive thresholds and RMS calculation
+    * IMPROVED: Enhanced silence detection with proper RMS calculation
     * @param {Buffer} buffer - Audio buffer to analyze
     * @param {string} callSid - Call ID for tracking adaptive thresholds
     * @returns {boolean} - True if audio is considered silent
     */
-   function isSilent(buffer, callSid) {
-       if (buffer.length < 2) return true;
-      
-       // Initialize quality metrics for this call if not exists
+   function improvedSilenceDetection(buffer, callSid, threshold = 500) {
+       if (!buffer || buffer.length < 2) return true;
+       
+       let sumSquares = 0;
+       let maxAmplitude = 0;
+       const sampleCount = Math.floor(buffer.length / 2);
+       
+       // Calculate RMS over the entire buffer
+       for (let i = 0; i < buffer.length - 1; i += 2) {
+           try {
+               const sample = Math.abs(buffer.readInt16LE(i));
+               sumSquares += sample * sample;
+               maxAmplitude = Math.max(maxAmplitude, sample);
+           } catch (e) {
+               // Handle potential buffer read errors
+               continue;
+           }
+       }
+       
+       if (sampleCount === 0) return true;
+       
+       const rms = Math.sqrt(sumSquares / sampleCount);
+       const energy = rms;
+       
+       // Adaptive threshold based on recent audio levels
        if (!audioQualityMetrics[callSid]) {
            audioQualityMetrics[callSid] = {
-               avgAmplitude: 0,
-               maxAmplitude: 0,
-               sampleCount: 0,
-               adaptiveThreshold: 800 // Start with lower threshold
+               avgAmplitude: energy,
+               maxAmplitude: maxAmplitude,
+               adaptiveThreshold: Math.max(300, energy * 0.3)
            };
+       } else {
+           const metrics = audioQualityMetrics[callSid];
+           metrics.avgAmplitude = (metrics.avgAmplitude * 0.9) + (energy * 0.1);
+           metrics.maxAmplitude = Math.max(metrics.maxAmplitude * 0.95, maxAmplitude);
+           metrics.adaptiveThreshold = Math.max(200, Math.min(1500, metrics.avgAmplitude * 0.25));
        }
-
-
-       const metrics = audioQualityMetrics[callSid];
-      
-       // Calculate RMS (Root Mean Square) for better audio level detection
-       let sumSquares = 0;
-       let maxSample = 0;
-       const sampleCount = buffer.length / 2;
-      
-       for (let i = 0; i < buffer.length; i += 2) {
-           const sample = Math.abs(buffer.readInt16LE(i));
-           sumSquares += sample * sample;
-           maxSample = Math.max(maxSample, sample);
+       
+       const currentThreshold = audioQualityMetrics[callSid].adaptiveThreshold;
+       const isSilentResult = energy < currentThreshold;
+       
+       // Log for debugging every 50 calls
+       if (audioQualityMetrics[callSid].sampleCount % 50 === 0) {
+           console.log(`Audio Quality [${callSid}]: RMS=${energy.toFixed(0)}, Threshold=${currentThreshold.toFixed(0)}, Avg=${audioQualityMetrics[callSid].avgAmplitude.toFixed(0)}`);
        }
-      
-       const rms = Math.sqrt(sumSquares / sampleCount);
-      
-       // Update adaptive threshold based on recent audio levels
-       metrics.avgAmplitude = (metrics.avgAmplitude * 0.95) + (rms * 0.05);
-       metrics.maxAmplitude = Math.max(metrics.maxAmplitude, maxSample);
-       metrics.sampleCount++;
-      
-       // Adaptive threshold: use 20% of average amplitude, with bounds
-       metrics.adaptiveThreshold = Math.max(200, Math.min(2000, metrics.avgAmplitude * 0.2));
-      
-       const isSilentResult = rms < metrics.adaptiveThreshold;
-      
-       // Log for debugging
-       if (metrics.sampleCount % 100 === 0) {
-           console.log(`Audio Quality [${callSid}]: RMS=${rms.toFixed(0)}, Threshold=${metrics.adaptiveThreshold.toFixed(0)}, Avg=${metrics.avgAmplitude.toFixed(0)}`);
-       }
-      
+       audioQualityMetrics[callSid].sampleCount = (audioQualityMetrics[callSid].sampleCount || 0) + 1;
+       
        return isSilentResult;
    }
 
@@ -310,7 +357,7 @@
 
 
            // Encode the audio buffer to Base64 for inline data in the Gemini request.
-           const wavBuffer = pcmToWav(audioBuffer, 8000, 1, 16);
+           const wavBuffer = createProperWavFile(audioBuffer, 8000, 1, 16);
            const base64Audio = wavBuffer.toString('base64');
            console.log(`[${callSid}] Sending ${audioBuffer.length} bytes of audio to Gemini (WAV: ${wavBuffer.length} bytes).`);
           
@@ -448,37 +495,98 @@
    }
 
 
-   const fs = require('fs');
-   const path = require('path');
-  
-   // Method 1: Save audio files for manual inspection
+   /**
+    * IMPROVED: Better debugging with both raw and WAV files
+    */
    function saveAudioForDebugging(audioBuffer, callSid, timestamp) {
        try {
-           // Create debug directory if it doesn't exist
            const debugDir = path.join(__dirname, 'debug_audio');
            if (!fs.existsSync(debugDir)) {
-               fs.mkdirSync(debugDir);
+               fs.mkdirSync(debugDir, { recursive: true });
            }
-
-
+           
            // Save raw PCM
-           const pcmFilename = `${callSid}_${timestamp}_raw.pcm`;
-           const pcmPath = path.join(debugDir, pcmFilename);
+           const pcmPath = path.join(debugDir, `${callSid}_${timestamp}_raw.pcm`);
            fs.writeFileSync(pcmPath, audioBuffer);
-
-
-           // Save as WAV for easy playback
-           const wavBuffer = pcmToWav(audioBuffer, 8000, 1, 16);
-           const wavFilename = `${callSid}_${timestamp}_audio.wav`;
-           const wavPath = path.join(debugDir, wavFilename);
+           
+           // Save properly formatted WAV
+           const wavBuffer = createProperWavFile(audioBuffer, 8000, 1, 16);
+           const wavPath = path.join(debugDir, `${callSid}_${timestamp}_audio.wav`);
            fs.writeFileSync(wavPath, wavBuffer);
-
-
-           console.log(`[${callSid}] Audio saved: ${wavFilename} (${audioBuffer.length} bytes PCM, ${wavBuffer.length} bytes WAV)`);
-          
+           
+           console.log(`[${callSid}] Audio saved: PCM=${audioBuffer.length}B, WAV=${wavBuffer.length}B`);
+           
            return { pcmPath, wavPath };
        } catch (error) {
-           console.error(`[${callSid}] Error saving debug audio:`, error);
+           console.error(`[${callSid}] Save error:`, error);
+           return null;
+       }
+   }
+
+
+   /**
+    * IMPROVED: Process accumulated audio with better validation
+    */
+   async function processAccumulatedAudio(callSid, ws, streamSid) {
+       const currentAudioSegment = incomingAudioBuffers[callSid];
+       incomingAudioBuffers[callSid] = Buffer.alloc(0);
+       
+       if (!currentAudioSegment || currentAudioSegment.length === 0) {
+           console.log(`[${callSid}] No audio to process`);
+           return;
+       }
+       
+       const durationSeconds = currentAudioSegment.length / (8000 * 2);
+       console.log(`[${callSid}] Processing ${currentAudioSegment.length} bytes (${durationSeconds.toFixed(2)}s)`);
+       
+       // Only process if we have sufficient audio (at least 0.3 seconds)
+       if (currentAudioSegment.length < 4800) { // 0.3 seconds at 8kHz 16-bit
+           console.log(`[${callSid}] Audio too short, waiting for more`);
+           return;
+       }
+       
+       try {
+           // Save for debugging
+           const timestamp = Date.now();
+           saveAudioForDebugging(currentAudioSegment, callSid, timestamp);
+           
+           // Process with Gemini
+           const aiTextResponse = await geminiGenerateContent(currentAudioSegment, callSid);
+           
+           if (aiTextResponse && aiTextResponse.trim().length > 0) {
+               console.log(`[${callSid}] AI Response: "${aiTextResponse}"`);
+               
+               // Handle barge-in
+               if (speakingState[callSid]) {
+                   console.log(`[${callSid}] User interrupted AI, stopping current speech`);
+                   speakingState[callSid] = false;
+               }
+               
+               // Update conversation history
+               conversationHistory[callSid].push({ 
+                   role: "user", 
+                   content: `User speech processed` 
+               });
+               conversationHistory[callSid].push({ 
+                   role: "assistant", 
+                   content: aiTextResponse 
+               });
+               
+               // Synthesize and stream response
+               if (!speakingState[callSid]) {
+                   try {
+                       const aiAudioBuffer = await synthesizeWithDeepgram(aiTextResponse);
+                       await streamAIResponseToTwilio(ws, aiAudioBuffer, streamSid, callSid);
+                   } catch (ttsError) {
+                       console.error(`[${callSid}] TTS failed:`, ttsError);
+                   }
+               }
+           } else {
+               console.log(`[${callSid}] No meaningful response from Gemini`);
+           }
+           
+       } catch (error) {
+           console.error(`[${callSid}] Error processing audio:`, error);
        }
    }
 
@@ -621,12 +729,13 @@
                    }
 
 
-                   // Convert Mu-Law to Linear16 PCM
+                   // FIXED: Use proper Mu-Law to Linear16 conversion
                    try {
-                       const wav = new WaveFile();
-                       wav.fromScratch(1, 8000, "8m", Buffer.from(twilioData, "base64")); // From Mu-Law 8kHz
-                       wav.fromMuLaw(); // Convert internal samples to Linear16
-                       const audioBufferLinear16 = Buffer.from(wav.data.samples); // Extract Linear16 PCM data
+                       // Decode base64 Mu-Law data from Twilio
+                       const muLawBuffer = Buffer.from(twilioData, "base64");
+                       
+                       // Convert Mu-Law to Linear16 PCM using improved function
+                       const audioBufferLinear16 = muLawToLinear16(muLawBuffer);
 
 
                        // Update last activity time
@@ -634,7 +743,7 @@
 
 
                        // IMPROVED: Use enhanced silence detection
-                       if (isSilent(audioBufferLinear16, callSid)) {
+                       if (improvedSilenceDetection(audioBufferLinear16, callSid)) {
                            return; // Skip processing silence
                        }
 
@@ -649,62 +758,15 @@
                        }
 
 
-                       // IMPROVED: Longer timeout for more complete sentences, with minimum buffer size check
+                       // IMPROVED: Dynamic timeout based on audio length and quality
+                       const currentBufferDuration = incomingAudioBuffers[callSid].length / (8000 * 2); // seconds
+                       const timeoutDuration = Math.max(800, Math.min(2000, 500 + (currentBufferDuration * 200)));
+
+
                        timeoutHandlers[callSid] = setTimeout(async () => {
                            console.log(`[${callSid}] User speech timeout triggered. Processing audio segment.`);
-
-
-                           const currentAudioSegment = incomingAudioBuffers[callSid];
-                           incomingAudioBuffers[callSid] = Buffer.alloc(0); // Clear the buffer for the next segment.
-                          
-                           console.log(`[${callSid}] Processing audio segment of length: ${currentAudioSegment.length} bytes`);
-
-
-                           // IMPROVED: Only process if we have substantial audio (at least 0.5 seconds)
-                           if (currentAudioSegment.length > 8000) { // 0.5 seconds at 8kHz 16-bit = 8000 bytes
-                               const {pcmPath, wavPath} = saveAudioForDebugging(currentAudioSegment, callSid, Date.now());
-                              
-                               // Call Gemini with the accumulated audio to get a text response.
-                               const aiTextResponse = await geminiGenerateContent(currentAudioSegment, callSid);
-
-
-                               // IMPROVED: Only proceed if we got a meaningful response
-                               if (aiTextResponse && aiTextResponse.length > 0) {
-                                   // --- Refined Barge-in logic ---
-                                   if (speakingState[callSid]) {
-                                       console.log(`[${callSid}] Confirmed barge-in by meaningful user speech. Interrupting AI speech.`);
-                                       speakingState[callSid] = false; // This will stop current AI streaming
-                                   }
-
-
-                                   // Update conversation history with meaningful responses only
-                                   conversationHistory[callSid].push({ role: "user", content: `User said: ${aiTextResponse}` });
-                                   conversationHistory[callSid].push({ role: "assistant", content: aiTextResponse });
-                                   console.log(`[${callSid}] AI Text Response: "${aiTextResponse}"`);
-
-
-                                   // Only synthesize and stream if not currently speaking
-                                   if (!speakingState[callSid]) {
-                                       try {
-                                           // Synthesize the AI's text response into audio using Deepgram TTS.
-                                           const aiAudioBuffer = await synthesizeWithDeepgram(aiTextResponse);
-
-
-                                           // Stream the synthesized audio back to Twilio.
-                                           await streamAIResponseToTwilio(ws, aiAudioBuffer, streamSid, callSid);
-                                       } catch (ttsError) {
-                                           console.error(`[${callSid}] TTS synthesis failed:`, ttsError);
-                                       }
-                                   } else {
-                                       console.log(`[${callSid}] AI was speaking and meaningful user speech detected. Skipping new AI response.`);
-                                   }
-                               } else {
-                                   console.log(`[${callSid}] No meaningful speech detected from Gemini response.`);
-                               }
-                           } else {
-                               console.log(`[${callSid}] Audio segment too short (${currentAudioSegment.length} bytes), waiting for more audio.`);
-                           }
-                       }, 1200); // IMPROVED: Increased timeout to 1.2 seconds for more complete sentences
+                           await processAccumulatedAudio(callSid, ws, streamSid);
+                       }, timeoutDuration);
 
 
                    } catch (audioConversionError) {
